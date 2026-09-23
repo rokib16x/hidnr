@@ -41,12 +41,12 @@ enum StatusItemScanner {
             return (app.processIdentifier, id)
         }
         DispatchQueue.global(qos: .userInitiated).async {
-            let icons = apps.flatMap { icons(pid: $0.0, bundleID: $0.1) }
-            DispatchQueue.main.async { completion(icons) }
+            let found = apps.flatMap { statusIcons(pid: $0.0, bundleID: $0.1) }
+            DispatchQueue.main.async { completion(found) }
         }
     }
 
-    private static func icons(pid: pid_t, bundleID: String) -> [Icon] {
+    private static func statusIcons(pid: pid_t, bundleID: String) -> [Icon] {
         let app = AXUIElementCreateApplication(pid)
         // A frozen app would otherwise stall the scan for seconds.
         AXUIElementSetMessagingTimeout(app, 0.1)
