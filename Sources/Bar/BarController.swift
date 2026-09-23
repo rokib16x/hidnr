@@ -151,6 +151,9 @@ final class BarController: NSObject {
         panelModel.isHiding = hiding
         panelModel.hiddenCount = strategy.hiddenCount
         panelModel.problem = strategy.problem
+        panelModel.tip = HidingStrategies.usesAllowList && !Installation.isKeptVisibleWhileHiding
+            ? "Move hidnr to your Applications folder so its h stays in place while icons are hidden."
+            : nil
         panelModel.needsAccessibility = strategy.needsAccessibility && strategy.problem != nil
     }
 
@@ -245,11 +248,20 @@ final class BarController: NSObject {
         cancelAutoHide()
         guard !strategy.isHiding else { return }
         let before = glyphPlacement()
-        strategy.hide { [weak self] hidden in
+        let go = { [weak self] (baseline: [StatusItemScanner.Icon]) in
             guard let self else { return }
-            self.refresh()
-            if hidden { self.placeStandIn(startingAt: before) }
+            self.strategy.hide { [weak self] hidden in
+                guard let self else { return }
+                self.refresh()
+                if hidden { self.placeStandIn(startingAt: before, baseline: baseline) }
+            }
         }
+        // Snapshot every icon first: once hidden, Accessibility reports hidden
+        // icons at these same frames, and the stand-in needs to tell them apart.
+        guard HidingStrategies.usesAllowList, !Installation.isKeptVisibleWhileHiding,
+              StatusItemScanner.isTrusted else { return go([]) }
+        let known = standIn.appsWithIcons
+        StatusItemScanner.scan(only: known.isEmpty ? nil : known.union(StatusItemScanner.systemOwners)) { go($0) }
     }
 
     private func show() {
@@ -276,18 +288,18 @@ final class BarController: NSObject {
     }
 
     /// After a hide on macOS 27, show the stand-in where the h can be clicked.
-    /// macOS's allow-list hides our own item along with the rest (even for a
-    /// Developer ID build), so the stand-in always takes over, and the real item
-    /// shrinks to nothing so there can never be two h's.
-    private func placeStandIn(startingAt before: Placement?) {
-        guard HidingStrategies.usesAllowList else { return }
+    /// Only needed when macOS hides our own item too, which it does unless
+    /// hidnr is Developer ID signed and installed in /Applications. The real
+    /// item shrinks to nothing meanwhile, so there can never be two h's.
+    private func placeStandIn(startingAt before: Placement?, baseline: [StatusItemScanner.Icon]) {
+        guard HidingStrategies.usesAllowList, !Installation.isKeptVisibleWhileHiding else { return }
         let appearance = glyph.button?.effectiveAppearance
         glyph.length = 0
         // Let the bar reflow before measuring where the visible icons end.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             guard let self, self.strategy.isHiding else { return }
             self.standIn.start(image: Self.hiddenGlyph, width: before?.width ?? 30,
-                               appearance: appearance, hiddenApps: IconLayout.hiddenApps)
+                               appearance: appearance, hiddenApps: IconLayout.hiddenApps, baseline: baseline)
         }
         // Fail open: if no stand-in could be placed, nothing would be left to
         // click, so bring every icon back instead.

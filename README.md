@@ -12,6 +12,9 @@ Get `hidnr-<version>.dmg` from the [latest release](https://github.com/rokib16x/
 open it, and drag **hidnr** into **Applications**. The app is signed with a Developer ID
 and notarized by Apple, so it opens without an "unidentified developer" warning.
 
+Keep it in **Applications**: on macOS 27, the menu bar only keeps hidnr's own **h**
+visible while hiding when hidnr is installed there.
+
 ### Homebrew
 
 This repository is its own tap:

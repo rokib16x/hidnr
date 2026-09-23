@@ -8,6 +8,8 @@ final class PanelModel: ObservableObject {
     @Published var hiddenCount: Int?
     @Published var problem: String?
     @Published var needsAccessibility = false
+    /// A gentle suggestion (not an error), e.g. to install hidnr properly.
+    @Published var tip: String?
 
     var toggle: () -> Void = {}
     var openSettings: () -> Void = {}
@@ -61,6 +63,11 @@ struct ControlPanel: View {
 
             if let problem = model.problem {
                 ProblemBanner(text: problem, showsGrant: model.needsAccessibility, grant: model.grantAccess)
+            } else if let tip = model.tip {
+                Label(tip, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Button(action: model.organize) {

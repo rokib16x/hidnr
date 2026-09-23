@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.1
+
+- **The real h now stays in the menu bar while icons are hidden.** macOS 27
+  keeps hidnr's own icon only when hidnr is installed in **/Applications**
+  (as the DMG and Homebrew do). Installed that way, hidnr no longer needs its
+  stand-in h, so it can't end up beside the notch or on top of other icons.
+- Run from anywhere else, hidnr falls back to the stand-in h and suggests
+  moving it to Applications.
+- The stand-in is placed from a snapshot taken just before hiding, since macOS
+  keeps reporting hidden icons at their old positions.
+
 ## 0.1.0
 
 First release.

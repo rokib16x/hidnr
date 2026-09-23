@@ -28,13 +28,19 @@ final class StandInGlyph {
     /// Shows the glyph and keeps it snug against the visible icons, re-checking
     /// every second: icons come and go (AirPods connecting, an app launching)
     /// while hidnr is hiding, and the stand-in must move with them.
-    func start(image: NSImage, width: CGFloat, appearance: NSAppearance?, hiddenApps: Set<String>) {
+    /// `baseline` is every icon's frame from just before hiding. Accessibility
+    /// keeps reporting a hidden icon at exactly that frame, which is how the
+    /// stand-in tells stale icons from visible ones.
+    func start(image: NSImage, width: CGFloat, appearance: NSAppearance?, hiddenApps: Set<String>,
+               baseline: [StatusItemScanner.Icon]) {
         self.image = image
         self.width = width
         self.appearance = appearance
         self.hiddenApps = hiddenApps
-        rightInset = nil
-        appsWithIcons = []
+        self.baseline = Dictionary(Self.keyed(baseline), uniquingKeysWith: { first, _ in first })
+        moved = []
+        contentWidth = nil
+        if appsWithIcons.isEmpty { appsWithIcons = Set(baseline.map(\.bundleID)) }
         ticks = 0
         reposition()
         timer?.invalidate()
@@ -50,7 +56,7 @@ final class StandInGlyph {
     func stop() {
         timer?.invalidate()
         timer = nil
-        rightInset = nil
+        contentWidth = nil
         panels.values.forEach { $0.orderOut(nil) }
         panels.removeAll()
     }
@@ -64,13 +70,16 @@ final class StandInGlyph {
 
     // MARK: Placement
 
-    /// Distance from the screen's right edge to the leftmost visible icon.
-    /// The bar is right-aligned and shows the same icons on every display, so
-    /// one inset positions the stand-in everywhere.
-    private var rightInset: CGFloat?
-    /// Apps seen with an icon on the last full scan; the frequent checks only
-    /// ask these (plus macOS's own items), which keeps them cheap.
-    private var appsWithIcons: Set<String> = []
+    /// How far the visible icons reach left from the right edge of the menu
+    /// bar, not counting the notch. The bar is right-aligned and shows the same
+    /// icons on every display, so this one width places the stand-in everywhere.
+    private var contentWidth: CGFloat?
+    /// Apps seen with an icon; the frequent checks only ask these (plus
+    /// macOS's own items), which keeps them cheap.
+    private(set) var appsWithIcons: Set<String> = []
+    private var baseline: [String: CGRect] = [:]
+    /// Icons whose frame has changed since `baseline`: those are certainly live.
+    private var moved: Set<String> = []
     private var ticks = 0
     private var isScanning = false
     /// Full scans still owed after something changed (an app launched), since a
@@ -96,29 +105,86 @@ final class StandInGlyph {
         }
     }
 
+    /// Identifies each icon as "bundle#n", its order within its app.
+    static func keyed(_ icons: [StatusItemScanner.Icon]) -> [(String, CGRect)] {
+        var counts: [String: Int] = [:]
+        return icons.map { icon in
+            let n = counts[icon.bundleID, default: 0]
+            counts[icon.bundleID] = n + 1
+            return ("\(icon.bundleID)#\(n)", icon.frame)
+        }
+    }
+
+    /// Finds where the visible icons end. While hiding, Accessibility still
+    /// reports hidden icons at their old frames, so starting from the clock
+    /// this walks left and accepts an icon only if it's plausible as visible:
+    /// macOS's own items, icons that moved or are new since hiding, and unmoved
+    /// icons only until the first moved one (everything left of a moved icon
+    /// that didn't move is stale). Overlaps are stale too, and the first real
+    /// gap ends the run.
     private func measure(_ icons: [StatusItemScanner.Icon]) {
-        let me = Bundle.main.bundleIdentifier
-        let visible = icons.filter { $0.bundleID != me && !hiddenApps.contains($0.bundleID) && $0.frame.width > 0 }
-        // Accessibility uses a top-left origin on the primary display. Anchor on
-        // the rightmost icon (the clock) to find which display these are on.
+        let me = Bundle.main.bundleIdentifier ?? ""
+        let hiddenApps = self.hiddenApps
+        var items: [(key: String, frame: CGRect, system: Bool)] = []
+        for (key, frame) in Self.keyed(icons) {
+            let bundle = String(key[..<key.lastIndex(of: "#")!])
+            guard bundle != me, !hiddenApps.contains(bundle), frame.width > 0 else { continue }
+            if let before = baseline[key] {
+                if abs(before.minX - frame.minX) > 0.5 || abs(before.width - frame.width) > 0.5 { moved.insert(key) }
+            } else {
+                moved.insert(key)   // appeared after hiding (AirPods connecting…)
+            }
+            items.append((key, frame, StatusItemScanner.isSystemOwned(bundle)))
+        }
+
+        // Anchor on the rightmost icon (the clock) to find the display and row.
         let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
-        guard let rightmost = visible.max(by: { $0.frame.maxX < $1.frame.maxX }) else { return }
-        let anchor = NSPoint(x: rightmost.frame.midX, y: primaryTop - rightmost.frame.midY)
+        guard let clock = items.max(by: { $0.frame.maxX < $1.frame.maxX }) else { return }
+        let anchor = NSPoint(x: clock.frame.midX, y: primaryTop - clock.frame.midY)
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(anchor) }) else { return }
-        let sameRow = visible.filter { abs($0.frame.midY - rightmost.frame.midY) < 8 }
-        guard let left = sameRow.map(\.frame.minX).min() else { return }
-        rightInset = screen.frame.maxX - left
+        let notch = screen.notchRange
+        let row = items
+            .filter { abs($0.frame.midY - clock.frame.midY) < 8 }
+            .sorted { $0.frame.maxX > $1.frame.maxX }
+
+        var accepted: [CGRect] = [clock.frame]
+        var edge = clock.frame.minX
+        var passedMovedIcon = false
+        for item in row.dropFirst() {
+            let isMoved = moved.contains(item.key)
+            if !item.system && !isMoved && passedMovedIcon { continue }
+            if accepted.contains(where: { $0.insetBy(dx: 1, dy: 0).intersects(item.frame) }) { continue }
+            var gap = edge - item.frame.maxX
+            if let notch, item.frame.maxX <= notch.upperBound + 1, edge >= notch.lowerBound - 1 {
+                gap -= notch.upperBound - notch.lowerBound
+            }
+            if gap > 24 { break }
+            if !item.system && isMoved { passedMovedIcon = true }
+            accepted.append(item.frame)
+            edge = min(edge, item.frame.minX)
+        }
+
+        var width = screen.frame.maxX - edge
+        if let notch, edge < notch.lowerBound { width -= notch.upperBound - notch.lowerBound }
+        contentWidth = width
     }
 
     private func placePanels() {
-        guard let rightInset else { return }
+        guard let contentWidth else { return }
         var seen = Set<CGDirectDisplayID>()
         for bar in MenuBarWindows.bars() {
             guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: bar.midX, y: bar.midY)) }),
                   let id = screen.displayID else { continue }
-            var x = bar.maxX - rightInset - width
-            if let notch = screen.notchRange, x + width > notch.lowerBound, x < notch.upperBound {
-                x = notch.lowerBound - width
+            // A little breathing room, like the spacing between other icons.
+            var right = bar.maxX - contentWidth - 4
+            var x = right - width
+            if let notch = screen.notchRange {
+                // Icons that reach the notch continue on its left side.
+                if right < notch.upperBound {
+                    right -= notch.upperBound - notch.lowerBound
+                    x = right - width
+                }
+                if x + width > notch.lowerBound, x < notch.upperBound { x = notch.lowerBound - width }
             }
             let frame = NSRect(x: x, y: bar.minY, width: width, height: bar.height).integral
             seen.insert(id)
