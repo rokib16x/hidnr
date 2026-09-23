@@ -3,9 +3,9 @@ import AppKit
 /// A copy of the hidnr "h" drawn in a tiny floating window on top of the menu
 /// bar, used while icons are hidden on macOS 27.
 ///
-/// macOS 27's allow-list doesn't keep hidnr's own status item visible when hidnr
-/// is signed ad hoc (it does keep apps signed by a registered developer), so
-/// without this the user would have nothing to click to get their icons back.
+/// macOS 27's allow-list hides hidnr's own status item along with the others,
+/// even though hidnr is on the list (it keeps other allowed apps). Without this
+/// the user would have nothing to click to get their icons back.
 /// One window per display, since the menu bar repeats on each.
 final class StandInGlyph {
     /// Called on click; `true` for a right-click or control-click.
@@ -21,6 +21,9 @@ final class StandInGlyph {
     private var hiddenApps: Set<String> = []
 
     var isShown: Bool { timer != nil }
+
+    /// Whether at least one stand-in is actually on screen.
+    var hasPanels: Bool { !panels.isEmpty }
 
     /// Shows the glyph and keeps it snug against the visible icons, re-checking
     /// every second: icons come and go (AirPods connecting, an app launching)
@@ -47,6 +50,7 @@ final class StandInGlyph {
     func stop() {
         timer?.invalidate()
         timer = nil
+        rightInset = nil
         panels.values.forEach { $0.orderOut(nil) }
         panels.removeAll()
     }
@@ -84,6 +88,8 @@ final class StandInGlyph {
         StatusItemScanner.scan(only: full ? nil : visibleApps) { [weak self] icons in
             guard let self else { return }
             self.isScanning = false
+            // Stopped while this scan ran: don't bring the panels back.
+            guard self.timer != nil else { return }
             if full { self.appsWithIcons = Set(icons.map(\.bundleID)) }
             self.measure(icons)
             self.placePanels()
@@ -135,6 +141,9 @@ final class StandInGlyph {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
+        // Set explicitly: by default clicks on the transparent pixels around
+        // the glyph fall through to the menu bar, so only the ink was clickable.
+        panel.ignoresMouseEvents = false
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         panel.appearance = appearance

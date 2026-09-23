@@ -24,12 +24,16 @@ protocol HidingStrategy: AnyObject {
 
     /// The Icons page changed or an app launched; re-apply if hiding.
     func layoutChanged()
+
+    /// Whether a just-launched app would be hidden without the user asking.
+    func wouldHideByMistake(_ bundleID: String) -> Bool
 }
 
 extension HidingStrategy {
     var hiddenCount: Int? { nil }
     var needsAccessibility: Bool { false }
     func layoutChanged() {}
+    func wouldHideByMistake(_ bundleID: String) -> Bool { false }
 }
 
 enum HidingStrategies {

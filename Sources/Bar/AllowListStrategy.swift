@@ -21,7 +21,14 @@ final class AllowListStrategy: HidingStrategy {
 
     private let glyph: NSStatusItem
     private var token: Any?
+    /// Every restriction started and not yet released, including ones still in
+    /// flight. `show()` ends all of them, so none can outlive a show.
+    private var liveTokens: [AnyObject] = []
     private var isWorking = false
+    /// A change arrived while an update was in flight; apply again after it.
+    private var needsReapply = false
+    /// The apps the current restriction allows, to skip no-op re-applies.
+    private var allowedApps: Set<String> = []
     /// Bumped by `show()` so a hide that finishes afterwards is thrown away.
     private var attempt = 0
     private var askedForTrust = false
@@ -95,15 +102,25 @@ final class AllowListStrategy: HidingStrategy {
     /// an app launched. The new restriction starts before the old one ends, so
     /// the bar never flashes fully visible.
     func layoutChanged() {
-        guard isHiding, !isWorking else { return }
+        guard isHiding else { return }
+        guard !isWorking else { needsReapply = true; return }
         apply { _ in }
+    }
+
+    /// True when `bundleID` is a new app this restriction would hide by mistake.
+    func wouldHideByMistake(_ bundleID: String) -> Bool {
+        isHiding && !allowedApps.contains(bundleID) && !IconLayout.isHidden(bundleID)
     }
 
     func show() {
         attempt += 1
         isWorking = false
-        if let token { HNMenuBarAllowList.releaseToken(token) }
+        needsReapply = false
         token = nil
+        allowedApps = []
+        let all = liveTokens
+        liveTokens.removeAll()
+        all.forEach { HNMenuBarAllowList.releaseToken($0) }
     }
 
     func screensChanged() {
@@ -117,26 +134,37 @@ final class AllowListStrategy: HidingStrategy {
         let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
         let others = running.subtracting(IconLayout.hiddenApps).subtracting([me]).sorted()
         let allowed = [me] + others
+        if isHiding && Set(allowed) == allowedApps { return done(true) }
 
         isWorking = true
         attempt += 1
         let thisAttempt = attempt
         HNMenuBarAllowList.allowSystemItems(Self.systemItems, apps: allowed) { [weak self] newToken, error in
-            guard let self else { return }
-            self.isWorking = false
-            guard thisAttempt == self.attempt else {
-                // The user clicked show while this was in flight.
+            guard let self else {
                 if let newToken { HNMenuBarAllowList.releaseToken(newToken) }
                 return
             }
-            guard let newToken else {
+            guard thisAttempt == self.attempt else {
+                // The user clicked show (or a newer update started) meanwhile.
+                if let newToken { HNMenuBarAllowList.releaseToken(newToken) }
+                return
+            }
+            self.isWorking = false
+            guard let newToken = newToken as AnyObject? else {
                 return self.fail(.refused(error?.localizedDescription ?? "unknown error"), done)
             }
-            let old = self.token
+            // Keep only the new restriction: end every older one.
+            let older = self.liveTokens
+            self.liveTokens = [newToken]
             self.token = newToken
-            if let old { HNMenuBarAllowList.releaseToken(old) }
+            self.allowedApps = Set(allowed)
+            older.forEach { HNMenuBarAllowList.releaseToken($0) }
             self.failure = nil
             done(true)
+            if self.needsReapply {
+                self.needsReapply = false
+                self.layoutChanged()
+            }
         }
     }
 

@@ -66,9 +66,19 @@ final class BarController: NSObject {
         center.addObserver(self, selector: #selector(layoutChanged), name: IconLayout.didChange, object: nil)
         // Background-only apps (most menu bar apps) never post the workspace
         // "did launch" notification, so watch the running-apps list itself.
+        // Helper processes start all the time, so only real apps that the
+        // current restriction doesn't already allow trigger a re-apply.
         appsObservation = NSWorkspace.shared.observe(\.runningApplications, options: [.new]) { [weak self] _, change in
             guard change.kind == .insertion else { return }
-            DispatchQueue.main.async { self?.appLaunched() }
+            let ids = (change.newValue ?? []).compactMap { app -> String? in
+                guard app.bundleURL?.pathExtension == "app", app.activationPolicy != .prohibited else { return nil }
+                return app.bundleIdentifier
+            }
+            guard !ids.isEmpty else { return }
+            DispatchQueue.main.async {
+                guard let self, ids.contains(where: self.strategy.wouldHideByMistake) else { return }
+                self.appLaunched()
+            }
         }
 
         #if DEBUG
@@ -244,6 +254,7 @@ final class BarController: NSObject {
 
     private func show() {
         standIn.stop()
+        glyph.length = NSStatusItem.variableLength
         strategy.show()
         refresh()
         scheduleAutoHide()
@@ -264,17 +275,26 @@ final class BarController: NSObject {
         return Placement(width: window.frame.width, rightInset: screen.frame.maxX - window.frame.maxX)
     }
 
-    /// After a hide, show the stand-in where the h can be clicked. Only needed
-    /// when macOS hides our own item too, which it does for builds without a
-    /// developer team signature.
+    /// After a hide on macOS 27, show the stand-in where the h can be clicked.
+    /// macOS's allow-list hides our own item along with the rest (even for a
+    /// Developer ID build), so the stand-in always takes over, and the real item
+    /// shrinks to nothing so there can never be two h's.
     private func placeStandIn(startingAt before: Placement?) {
-        guard HidingStrategies.usesAllowList, !CodeSignature.hasDeveloperTeam else { return }
+        guard HidingStrategies.usesAllowList else { return }
+        let appearance = glyph.button?.effectiveAppearance
+        glyph.length = 0
         // Let the bar reflow before measuring where the visible icons end.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             guard let self, self.strategy.isHiding else { return }
             self.standIn.start(image: Self.hiddenGlyph, width: before?.width ?? 30,
-                               appearance: self.glyph.button?.effectiveAppearance,
-                               hiddenApps: IconLayout.hiddenApps)
+                               appearance: appearance, hiddenApps: IconLayout.hiddenApps)
+        }
+        // Fail open: if no stand-in could be placed, nothing would be left to
+        // click, so bring every icon back instead.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            guard let self, self.strategy.isHiding, !self.standIn.hasPanels else { return }
+            NSLog("hidnr: couldn't place the stand-in h; showing icons again")
+            self.show()
         }
     }
 
