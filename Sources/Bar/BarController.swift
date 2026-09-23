@@ -20,6 +20,9 @@ final class BarController: NSObject {
         return popover
     }()
 
+    private var appsObservation: NSKeyValueObservation?
+    private var launchDebounce: DispatchWorkItem?
+
     /// Stands in for the glyph while macOS hides it along with everything else.
     private let standIn = StandInGlyph()
 
@@ -61,8 +64,12 @@ final class BarController: NSObject {
         center.addObserver(self, selector: #selector(settingsChanged),
                            name: UserDefaults.didChangeNotification, object: nil)
         center.addObserver(self, selector: #selector(layoutChanged), name: IconLayout.didChange, object: nil)
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(layoutChanged),
-                                                          name: NSWorkspace.didLaunchApplicationNotification, object: nil)
+        // Background-only apps (most menu bar apps) never post the workspace
+        // "did launch" notification, so watch the running-apps list itself.
+        appsObservation = NSWorkspace.shared.observe(\.runningApplications, options: [.new]) { [weak self] _, change in
+            guard change.kind == .insertion else { return }
+            DispatchQueue.main.async { self?.appLaunched() }
+        }
 
         #if DEBUG
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
@@ -236,7 +243,7 @@ final class BarController: NSObject {
     }
 
     private func show() {
-        standIn.hide()
+        standIn.stop()
         strategy.show()
         refresh()
         scheduleAutoHide()
@@ -257,31 +264,17 @@ final class BarController: NSObject {
         return Placement(width: window.frame.width, rightInset: screen.frame.maxX - window.frame.maxX)
     }
 
-    /// After a hide, show the stand-in snug against the leftmost icon that is
-    /// still visible. Only needed when macOS hides our own item too, which it
-    /// does for builds without a developer team signature.
+    /// After a hide, show the stand-in where the h can be clicked. Only needed
+    /// when macOS hides our own item too, which it does for builds without a
+    /// developer team signature.
     private func placeStandIn(startingAt before: Placement?) {
         guard HidingStrategies.usesAllowList, !CodeSignature.hasDeveloperTeam else { return }
+        // Let the bar reflow before measuring where the visible icons end.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            self?.snugStandIn(width: before?.width ?? 30, appearance: self?.glyph.button?.effectiveAppearance)
-        }
-    }
-
-    private func snugStandIn(width: CGFloat, appearance: NSAppearance?) {
-        guard StatusItemScanner.isTrusted else { return }
-        StatusItemScanner.scan { [weak self] icons in
             guard let self, self.strategy.isHiding else { return }
-            let me = Bundle.main.bundleIdentifier
-            let hidden = IconLayout.hiddenApps
-            let visible = icons.filter { $0.bundleID != me && !hidden.contains($0.bundleID) && $0.frame.width > 0 }
-            // Accessibility uses a top-left origin on the primary display; flip y
-            // to find which AppKit screen the icons are on.
-            let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
-            guard let leftmost = visible.min(by: { $0.frame.minX < $1.frame.minX }) else { return }
-            let point = NSPoint(x: leftmost.frame.midX, y: primaryTop - leftmost.frame.midY)
-            guard let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) ?? NSScreen.main else { return }
-            let inset = screen.frame.maxX - leftmost.frame.minX + 2
-            self.standIn.show(image: Self.hiddenGlyph, width: width, rightInset: inset, appearance: appearance)
+            self.standIn.start(image: Self.hiddenGlyph, width: before?.width ?? 30,
+                               appearance: self.glyph.button?.effectiveAppearance,
+                               hiddenApps: IconLayout.hiddenApps)
         }
     }
 
@@ -315,18 +308,21 @@ final class BarController: NSObject {
 
     @objc private func screensChanged() {
         strategy.screensChanged()
-        if standIn.isShown { snugStandIn(width: glyphPlacement()?.width ?? 30, appearance: glyph.button?.effectiveAppearance) }
+        if standIn.isShown { standIn.reposition() }
+    }
+
+    /// Apps often launch in bursts; re-apply once they've settled.
+    private func appLaunched() {
+        launchDebounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.layoutChanged() }
+        launchDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     @objc private func layoutChanged() {
         strategy.layoutChanged()
         refresh()
-        if standIn.isShown {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-                guard let self else { return }
-                self.snugStandIn(width: self.glyphPlacement()?.width ?? 30, appearance: self.glyph.button?.effectiveAppearance)
-            }
-        }
+        standIn.update(hiddenApps: IconLayout.hiddenApps)
     }
 
     @objc private func settingsChanged() {

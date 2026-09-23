@@ -18,8 +18,10 @@ enum StatusItemScanner {
 
     /// Apps whose icons are macOS's own controls (clock, Wi-Fi, Control Center…).
     /// They can't be hidden per app, so hidnr leaves them alone.
+    static let systemOwners: Set<String> = ["com.apple.controlcenter", "com.apple.systemuiserver", "com.apple.MenuBarAgent"]
+
     static func isSystemOwned(_ bundleID: String) -> Bool {
-        ["com.apple.controlcenter", "com.apple.systemuiserver", "com.apple.MenuBarAgent"].contains(bundleID)
+        systemOwners.contains(bundleID)
     }
 
     /// Shows the system "allow Accessibility" prompt.
@@ -32,12 +34,14 @@ enum StatusItemScanner {
     /// the result on the main queue. hidnr's own icon is included, so callers
     /// can compare positions in one coordinate space (with several displays,
     /// AppKit window frames and Accessibility positions can disagree).
-    static func scan(_ completion: @escaping ([Icon]) -> Void) {
+    /// `only` limits the scan to those apps, for cheap repeated checks.
+    static func scan(only: Set<String>? = nil, _ completion: @escaping ([Icon]) -> Void) {
         // Only real app bundles own status items; skipping helpers and XPC
         // services makes the scan several times faster.
         let apps: [(pid_t, String)] = NSWorkspace.shared.runningApplications.compactMap { app in
             guard app.bundleURL?.pathExtension == "app",
-                  let id = app.bundleIdentifier else { return nil }
+                  let id = app.bundleIdentifier,
+                  only?.contains(id) ?? true else { return nil }
             return (app.processIdentifier, id)
         }
         DispatchQueue.global(qos: .userInitiated).async {
