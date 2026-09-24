@@ -1,6 +1,6 @@
 cask "hidnr" do
-  version "0.1.0"
-  sha256 "043c39e2578e225e3b78a02fa58c73f8d2d79748695cd9b6977989ac3994eff3"
+  version "0.1.1"
+  sha256 "c99486dc41dbb021fb9490573fdc6c90a33e1c8c75c4c9594082a51e3e8a3713"
 
   url "https://github.com/rokib16x/hidnr/releases/download/v#{version}/hidnr-#{version}.dmg"
   name "hidnr"
