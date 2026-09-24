@@ -22,8 +22,9 @@ final class StandInGlyph {
 
     var isShown: Bool { timer != nil }
 
-    /// Whether at least one stand-in is actually on screen.
-    var hasPanels: Bool { !panels.isEmpty }
+    /// Whether the stand-in knows where it goes. It may still be off screen on
+    /// purpose, e.g. while a display is in full screen.
+    var hasPlacement: Bool { contentWidth != nil }
 
     /// Shows the glyph and keeps it snug against the visible icons, re-checking
     /// every second: icons come and go (AirPods connecting, an app launching)
@@ -40,11 +41,19 @@ final class StandInGlyph {
         self.baseline = Dictionary(Self.keyed(baseline), uniquingKeysWith: { first, _ in first })
         moved = []
         contentWidth = nil
+        baselineClock = baseline.max(by: { $0.frame.maxX < $1.frame.maxX })?.frame
+        // Until the first measurement, stand in exactly where the real h was.
+        if let clock = baselineClock,
+           let own = baseline.first(where: { $0.bundleID == Bundle.main.bundleIdentifier }) {
+            contentWidth = max(0, Self.contentWidth(from: own.frame.maxX + 4, clock: clock))
+        }
         if appsWithIcons.isEmpty { appsWithIcons = Set(baseline.map(\.bundleID)) }
         ticks = 0
         reposition()
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.reposition() }
+        // Placement is cheap and runs 4x a second so the stand-in reacts quickly
+        // to full screen; the Accessibility scan inside runs once a second.
+        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.reposition() }
     }
 
     func update(hiddenApps: Set<String>) {
@@ -78,6 +87,12 @@ final class StandInGlyph {
     /// macOS's own items), which keeps them cheap.
     private(set) var appsWithIcons: Set<String> = []
     private var baseline: [String: CGRect] = [:]
+    /// The clock's frame when hiding. Accessibility only reports icon positions
+    /// for the active menu bar, in that display's coordinates (sometimes ones
+    /// that match no screen at all). The clock is always the rightmost icon and
+    /// doesn't move on a given display, so a clock elsewhere means another
+    /// display's menu bar is active and its positions can't be compared.
+    private var baselineClock: CGRect?
     /// Icons whose frame has changed since `baseline`: those are certainly live.
     private var moved: Set<String> = []
     private var ticks = 0
@@ -88,9 +103,9 @@ final class StandInGlyph {
 
     func reposition() {
         placePanels()
-        guard StatusItemScanner.isTrusted, !isScanning else { return }
         ticks += 1
-        let full = appsWithIcons.isEmpty || ticks % 10 == 0 || fullScansOwed > 0
+        guard ticks % 4 == 1, StatusItemScanner.isTrusted, !isScanning else { return }
+        let full = appsWithIcons.isEmpty || ticks % 40 == 1 || fullScansOwed > 0
         if fullScansOwed > 0 { fullScansOwed -= 1 }
         let visibleApps = appsWithIcons.subtracting(hiddenApps).union(StatusItemScanner.systemOwners)
         isScanning = true
@@ -103,6 +118,14 @@ final class StandInGlyph {
             self.measure(icons)
             self.placePanels()
         }
+    }
+
+    /// The display an Accessibility frame (top-left origin on the primary
+    /// display) sits on.
+    static func screen(containing frame: CGRect) -> NSScreen? {
+        let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
+        let point = NSPoint(x: frame.midX, y: primaryTop - frame.midY)
+        return NSScreen.screens.first { $0.frame.contains(point) }
     }
 
     /// Identifies each icon as "bundle#n", its order within its app.
@@ -137,12 +160,15 @@ final class StandInGlyph {
             items.append((key, frame, StatusItemScanner.isSystemOwned(bundle)))
         }
 
-        // Anchor on the rightmost icon (the clock) to find the display and row.
-        let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
+        // Anchor on the rightmost icon: the clock.
         guard let clock = items.max(by: { $0.frame.maxX < $1.frame.maxX }) else { return }
-        let anchor = NSPoint(x: clock.frame.midX, y: primaryTop - clock.frame.midY)
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(anchor) }) else { return }
-        let notch = screen.notchRange
+        // Another display's menu bar is active: its positions aren't comparable
+        // with the baseline, so keep the last good placement until it returns.
+        if let baselineClock,
+           abs(clock.frame.minY - baselineClock.minY) > 2 || abs(clock.frame.maxX - baselineClock.maxX) > 40 {
+            return
+        }
+        let notch = Self.screen(containing: clock.frame)?.notchRange
         let row = items
             .filter { abs($0.frame.midY - clock.frame.midY) < 8 }
             .sorted { $0.frame.maxX > $1.frame.maxX }
@@ -164,9 +190,20 @@ final class StandInGlyph {
             edge = min(edge, item.frame.minX)
         }
 
-        var width = screen.frame.maxX - edge
-        if let notch, edge < notch.lowerBound { width -= notch.upperBound - notch.lowerBound }
-        contentWidth = width
+        contentWidth = Self.contentWidth(from: edge, clock: clock.frame)
+    }
+
+    /// Distance from the menu bar's right edge to `x`, leaving out the notch
+    /// when `x` lies left of it. The bar's right edge sits a fixed margin right
+    /// of the clock; use the real margin when the clock's display is known.
+    static func contentWidth(from x: CGFloat, clock: CGRect) -> CGFloat {
+        let screen = screen(containing: clock)
+        let barRight = clock.maxX + (screen.map { $0.frame.maxX - clock.maxX } ?? 20)
+        var width = barRight - x
+        if let notch = screen?.notchRange, x < notch.lowerBound {
+            width -= notch.upperBound - notch.lowerBound
+        }
+        return width
     }
 
     private func placePanels() {
@@ -175,6 +212,9 @@ final class StandInGlyph {
         for bar in MenuBarWindows.bars() {
             guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: bar.midX, y: bar.midY)) }),
                   let id = screen.displayID else { continue }
+            // Full screen (a video, a full-screen app): the menu bar is hidden, so
+            // the stand-in hides too, unless the pointer has revealed the bar.
+            if Spaces.isFullScreen(screen) && !Self.isPointerInMenuBar(of: screen, height: bar.height) { continue }
             // A little breathing room, like the spacing between other icons.
             var right = bar.maxX - contentWidth - 4
             var x = right - width
@@ -198,6 +238,11 @@ final class StandInGlyph {
             panel.orderOut(nil)
             panels[id] = nil
         }
+    }
+
+    private static func isPointerInMenuBar(of screen: NSScreen, height: CGFloat) -> Bool {
+        let point = NSEvent.mouseLocation
+        return screen.frame.contains(point) && point.y >= screen.frame.maxY - height - 4
     }
 
     private func makePanel(frame: NSRect) -> NSPanel {

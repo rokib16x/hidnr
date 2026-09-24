@@ -27,6 +27,9 @@ protocol HidingStrategy: AnyObject {
 
     /// Whether a just-launched app would be hidden without the user asking.
     func wouldHideByMistake(_ bundleID: String) -> Bool
+
+    /// Starts the current restriction afresh even if nothing changed.
+    func forceReapply()
 }
 
 extension HidingStrategy {
@@ -34,6 +37,7 @@ extension HidingStrategy {
     var needsAccessibility: Bool { false }
     func layoutChanged() {}
     func wouldHideByMistake(_ bundleID: String) -> Bool { false }
+    func forceReapply() {}
 }
 
 enum HidingStrategies {

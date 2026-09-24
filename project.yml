@@ -29,3 +29,10 @@ targets:
         DEVELOPMENT_TEAM: ""
         ENABLE_HARDENED_RUNTIME: NO
         COMBINE_HIDPI_IMAGES: YES
+        PRODUCT_MODULE_NAME: hidnr
+      configs:
+        # Dev builds get their own name and app ID, so Spotlight, Finder and the
+        # Accessibility list never mix them up with the installed release.
+        Debug:
+          PRODUCT_NAME: hidnr Dev
+          PRODUCT_BUNDLE_IDENTIFIER: com.rokib16x.hidnr.dev

@@ -107,6 +107,11 @@ final class AllowListStrategy: HidingStrategy {
         apply { _ in }
     }
 
+    func forceReapply() {
+        allowedApps = []
+        layoutChanged()
+    }
+
     /// True when `bundleID` is a new app this restriction would hide by mistake.
     func wouldHideByMistake(_ bundleID: String) -> Bool {
         isHiding && !allowedApps.contains(bundleID) && !IconLayout.isHidden(bundleID)

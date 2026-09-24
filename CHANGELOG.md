@@ -10,6 +10,14 @@
   moving it to Applications.
 - The stand-in is placed from a snapshot taken just before hiding, since macOS
   keeps reporting hidden icons at their old positions.
+- Fixed: after hiding on one display and working on another, the stand-in h
+  jumped beside the notch. Positions from another display are no longer
+  compared with the snapshot.
+- Fixed: the stand-in h floated over full-screen videos and apps. It now hides
+  while a display is in full screen, and returns when you reveal the menu bar.
+- Fixed: clicking the h again while a hide was starting began a second hide.
+- Dev builds are now a separate "hidnr Dev" app, so they can't be mistaken for
+  the installed one.
 
 ## 0.1.0
 

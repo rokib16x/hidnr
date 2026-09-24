@@ -29,6 +29,9 @@ final class BarController: NSObject {
     private var autoHideTimer: Timer?
     /// Ignores clicks that arrive while a previous toggle is still settling.
     private var isToggling = false
+    /// A hide has started but not finished (snapshot + macOS call, under a
+    /// second). Clicks meanwhile are ignored so they can't start a second hide.
+    private var hideInFlight = false
 
     override init() {
         Self.placeNearClockOnFirstRun()
@@ -88,6 +91,12 @@ final class BarController: NSObject {
         }
         DistributedNotificationCenter.default().addObserver(forName: .init("hidnr.debug.panel"), object: nil, queue: .main) { [weak self] _ in
             self?.togglePanelFromVisibleGlyph()
+        }
+        // Debug builds only: explicit hide/show/re-apply for test scripts.
+        for (name, action) in [("hide", { [weak self] in self?.hide() }),
+                               ("show", { [weak self] in self?.showEverything() }),
+                               ("reapply", { [weak self] in self?.strategy.forceReapply() })] as [(String, () -> Void)] {
+            DistributedNotificationCenter.default().addObserver(forName: .init("hidnr.debug.\(name)"), object: nil, queue: .main) { _ in action() }
         }
         // Debug builds only: lets a script toggle hiding while testing.
         DistributedNotificationCenter.default().addObserver(forName: .init("hidnr.debug.toggle"), object: nil, queue: .main) { [weak self] _ in
@@ -232,7 +241,7 @@ final class BarController: NSObject {
     }
 
     func toggle() {
-        guard !isToggling else { return }
+        guard !isToggling, !hideInFlight else { return }
         isToggling = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.isToggling = false }
         strategy.isHiding ? show() : hide()
@@ -246,12 +255,14 @@ final class BarController: NSObject {
 
     private func hide() {
         cancelAutoHide()
-        guard !strategy.isHiding else { return }
+        guard !strategy.isHiding, !hideInFlight else { return }
+        hideInFlight = true
         let before = glyphPlacement()
         let go = { [weak self] (baseline: [StatusItemScanner.Icon]) in
             guard let self else { return }
             self.strategy.hide { [weak self] hidden in
                 guard let self else { return }
+                self.hideInFlight = false
                 self.refresh()
                 if hidden { self.placeStandIn(startingAt: before, baseline: baseline) }
             }
@@ -301,10 +312,10 @@ final class BarController: NSObject {
             self.standIn.start(image: Self.hiddenGlyph, width: before?.width ?? 30,
                                appearance: appearance, hiddenApps: IconLayout.hiddenApps, baseline: baseline)
         }
-        // Fail open: if no stand-in could be placed, nothing would be left to
-        // click, so bring every icon back instead.
+        // Fail open: if the stand-in can't work out where it goes, nothing would
+        // be left to click, so bring every icon back instead.
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
-            guard let self, self.strategy.isHiding, !self.standIn.hasPanels else { return }
+            guard let self, self.strategy.isHiding, !self.standIn.hasPlacement else { return }
             NSLog("hidnr: couldn't place the stand-in h; showing icons again")
             self.show()
         }
