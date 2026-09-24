@@ -153,7 +153,8 @@ final class BarController: NSObject {
     private func refresh() {
         let hiding = strategy.isHiding
         if let button = glyph.button {
-            button.image = hiding ? Self.hiddenGlyph : Self.shownGlyph
+            // The same h in both states; the tooltip and accessibility label say which.
+            button.image = Self.glyphImage
             button.toolTip = strategy.problem ?? (hiding ? "Show hidden icons (right-click for more)" : "Hide icons (right-click for more)")
             button.setAccessibilityLabel(hiding ? "hidnr, icons hidden" : "hidnr, icons shown")
         }
@@ -171,27 +172,10 @@ final class BarController: NSObject {
     private static let glyphSize = NSSize(width: 13, height: 17)
 
     /// The "h" from the logo.
-    private static let shownGlyph: NSImage = {
+    private static let glyphImage: NSImage = {
         let base = NSImage(named: "BarGlyph") ?? NSImage()
         let image = NSImage(size: glyphSize, flipped: false) { rect in
             base.draw(in: rect)
-            return true
-        }
-        image.isTemplate = true
-        return image
-    }()
-
-    /// The "h" with a small dot beside it, meaning "more icons tucked away here".
-    private static let hiddenGlyph: NSImage = {
-        let base = NSImage(named: "BarGlyph") ?? NSImage()
-        let dot: CGFloat = 4
-        let size = NSSize(width: glyphSize.width + dot + 3, height: glyphSize.height)
-        let image = NSImage(size: size, flipped: false) { rect in
-            let rtl = MenuBarSide.isRightToLeft
-            let dotX = rtl ? rect.maxX - dot : 0
-            let glyphX = rtl ? 0 : dot + 3
-            NSBezierPath(ovalIn: NSRect(x: dotX, y: rect.midY - dot / 2 + 1, width: dot, height: dot)).fill()
-            base.draw(in: NSRect(x: glyphX, y: 0, width: glyphSize.width, height: glyphSize.height))
             return true
         }
         image.isTemplate = true
@@ -244,7 +228,7 @@ final class BarController: NSObject {
         guard !isToggling, !hideInFlight else { return }
         isToggling = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.isToggling = false }
-        strategy.isHiding ? show() : hide()
+        strategy.isHiding ? show() : hide(userInitiated: true)
     }
 
     // MARK: Hide / show
@@ -253,7 +237,8 @@ final class BarController: NSObject {
         if strategy.isHiding { show() }
     }
 
-    private func hide() {
+    /// `userInitiated` is true for clicks, false for hide-on-launch and auto-hide.
+    private func hide(userInitiated: Bool = false) {
         cancelAutoHide()
         guard !strategy.isHiding, !hideInFlight else { return }
         hideInFlight = true
@@ -265,6 +250,11 @@ final class BarController: NSObject {
                 self.hideInFlight = false
                 self.refresh()
                 if hidden { self.placeStandIn(startingAt: before, baseline: baseline) }
+                // A click that can't hide anything shouldn't look like nothing
+                // happened: open the step-by-step permission guide.
+                if !hidden, userInitiated, self.strategy.needsAccessibility {
+                    SettingsWindow.show(.icons)
+                }
             }
         }
         // Snapshot every icon first: once hidden, Accessibility reports hidden
@@ -309,7 +299,7 @@ final class BarController: NSObject {
         // Let the bar reflow before measuring where the visible icons end.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             guard let self, self.strategy.isHiding else { return }
-            self.standIn.start(image: Self.hiddenGlyph, width: before?.width ?? 30,
+            self.standIn.start(image: Self.glyphImage, width: before?.width ?? 30,
                                appearance: appearance, hiddenApps: IconLayout.hiddenApps, baseline: baseline)
         }
         // Fail open: if the stand-in can't work out where it goes, nothing would

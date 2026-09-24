@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2
+
+- The h no longer shows a dot while icons are hidden; it looks the same in
+  both states. Hover it (or right-click for the panel) to see which.
+- Clicking the h without the Accessibility permission now opens the
+  permission guide instead of silently doing nothing.
+
 ## 0.1.1
 
 - **The real h now stays in the menu bar while icons are hidden.** macOS 27
